@@ -48,7 +48,6 @@ def setup_driver():
 
     try:
         driver = webdriver.Chrome(service=service, options=chrome_options)
-        driver.set_page_load_timeout(60)
         return driver
     except WebDriverException as e:
         logging.error(f"Failed to initialize WebDriver: {e}")
@@ -120,7 +119,17 @@ def scrape_idea(driver, config, link):
     except Exception as e:
         logging.error(f"Error scraping {link}: {e}")
         return None
-
+    finally:
+        driver.quit()  # Ensure the browser is closed after scraping
+        
+def scrape_idea_with_retry(driver, config, link, retries=3):
+    for attempt in range(retries):
+        try:
+            return scrape_idea(driver, config, link)
+        except Exception as e:
+            logging.warning(f"Attempt {attempt + 1} failed for {link}: {e}")
+            time.sleep(5)  # Wait before retrying
+    return None
 
 def scrape_site(config, max_records, num_threads=4):
     """Scrape the site for ideas using multiple threads."""
@@ -136,7 +145,7 @@ def scrape_site(config, max_records, num_threads=4):
     while records_collected < max_records and scroll_attempts < max_scroll_attempts:
         try:
             # Wait for ideas to load
-            ideas = WebDriverWait(driver, 60).until(
+            ideas = WebDriverWait(driver, 120).until(
                 EC.presence_of_all_elements_located((By.CSS_SELECTOR, config["idea_selector"]))
             )
 
@@ -144,15 +153,18 @@ def scrape_site(config, max_records, num_threads=4):
             links_to_scrape = []
             for idea in ideas:
                 link = idea.get_attribute("href")
-                if link not in accessed_links:
-                    accessed_links.add(link)
-                    links_to_scrape.append(link)
+                if link.startswith("https://www.trendhunter.com/trends/"):
+                    if link not in accessed_links:
+                        accessed_links.add(link)
+                        links_to_scrape.append(link)
+                else: 
+                    continue
 
             # Use ThreadPoolExecutor to scrape links concurrently
             with ThreadPoolExecutor(max_workers=num_threads) as executor:
                 futures = []
                 for link in links_to_scrape:
-                    futures.append(executor.submit(scrape_idea, setup_driver(), config, link))
+                    futures.append(executor.submit(scrape_idea_with_retry, setup_driver(), config, link))
 
                 for future in as_completed(futures):
                     details = future.result()
@@ -185,7 +197,6 @@ def scrape_site(config, max_records, num_threads=4):
 
     driver.quit()
 
-
 def main(site, max_records, num_threads=4):
     """Main function to orchestrate the scraping process."""
     config = SITE_CONFIG.get(site)
@@ -210,7 +221,7 @@ def main(site, max_records, num_threads=4):
 
 if __name__ == "__main__":
     try:
-        main("trendhunter", max_records=1000, num_threads=4)  # Set max_records and num_threads as needed
+        main("trendhunter", max_records=10000, num_threads=4)  # Set max_records and num_threads as needed
     except Exception as e:
         logging.error(f"Script failed: {e}")
         exit(1)
