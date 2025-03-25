@@ -25,20 +25,20 @@ logging.basicConfig(
 SITE_CONFIG = {
     "trendhunter": {
         "url": "https://www.trendhunter.com/",
-        "popup_selector": ".lp__formPopClose",
         "idea_selector": "a.tha__relArticle",
         "title_selector": ".tha__title1",
         "summary_selector": ".tha__articleText",
         "score_selector": ".tha__scoreNum",
         "author_selector": ".tha__referenceAuthor",
+        "date_posted": ".tha__references",
+        "category_selector": "tha__bcLink tha__bcLink--category",
     }
 }
 
 
 def setup_driver():
-    """Initialize and return a Chrome WebDriver."""
     chrome_options = Options()
-    chrome_options.add_argument("--headless")  # Run in headless mode
+   #chrome_options.add_argument("--headless")  # Run in headless mode
     chrome_options.add_argument("--disable-gpu")  # Disable GPU acceleration
     chrome_options.add_argument("--ignore-certificate-errors")  # Ignore SSL errors
     chrome_options.add_argument("--log-level=3")  # Disable DevTools logging
@@ -54,11 +54,11 @@ def setup_driver():
         raise
 
 
-def close_popup(driver, popup_selector):
+def close_popup(driver):
     """Close a popup if it appears."""
     try:
-        WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, popup_selector))
+        WebDriverWait(driver,10).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, '.lp__formPopClose'))
         ).click()
         logging.info("Popup closed.")
     except TimeoutException:
@@ -113,7 +113,7 @@ def scrape_idea(driver, config, link):
     """Scrape details from a single idea page."""
     try:
         driver.get(link)
-        close_popup(driver, config["popup_selector"])
+        close_popup(driver)
         details = extract_idea_details(driver, config, link)
         return details
     except Exception as e:
@@ -135,7 +135,7 @@ def scrape_site(config, max_records, num_threads=4):
     """Scrape the site for ideas using multiple threads."""
     driver = setup_driver()
     driver.get(config["url"])
-    close_popup(driver, config["popup_selector"])
+    close_popup(driver)
 
     records_collected = 0
     accessed_links = set()
