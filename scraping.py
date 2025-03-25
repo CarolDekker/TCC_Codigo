@@ -29,8 +29,7 @@ SITE_CONFIG = {
         "title_selector": ".tha__title1",
         "summary_selector": ".tha__articleText",
         "score_selector": ".tha__scoreNum",
-        "author_selector": ".tha__referenceAuthor",
-        "date_posted": ".tha__references",
+        "reference_selector": ".tha__references",
         "category_selector": "tha__bcLink tha__bcLink--category",
     }
 }
@@ -38,7 +37,7 @@ SITE_CONFIG = {
 
 def setup_driver():
     chrome_options = Options()
-   #chrome_options.add_argument("--headless")  # Run in headless mode
+    chrome_options.add_argument("--headless")  # Run in headless mode
     chrome_options.add_argument("--disable-gpu")  # Disable GPU acceleration
     chrome_options.add_argument("--ignore-certificate-errors")  # Ignore SSL errors
     chrome_options.add_argument("--log-level=3")  # Disable DevTools logging
@@ -101,12 +100,16 @@ def extract_idea_details(driver, config, link):
         logging.warning(f"Score not found for link: {link}")
 
     try:
-        author = driver.find_element(By.CSS_SELECTOR, config["author_selector"]).text
+        references = driver.find_element(By.CSS_SELECTOR, config["reference_selector"]).text
     except NoSuchElementException:
-        author = " "
-        logging.warning(f"Author not found for link: {link}")
+        references = " "    
 
-    return [title, summary, score, author, link]
+    try:
+        category = driver.find_element(By.CSS_SELECTOR, config["category_selector"]).text
+    except NoSuchElementException:
+        category = " "
+    
+    return [title, summary, score, link, references, category]
 
 
 def scrape_idea(driver, config, link):
@@ -209,7 +212,7 @@ def main(site, max_records, num_threads=4):
     try:
         with open(file_path, mode="w", newline="", encoding="utf-8-sig", errors="ignore") as file:
             writer = csv.writer(file, quoting=csv.QUOTE_MINIMAL)
-            writer.writerow(["Title", "Summary", "Score", "Author", "Link"])  # Write header
+            writer.writerow(["title", "summary", "score", "link", "reference", "category"])  # Write header
 
             for record in scrape_site(config, max_records, num_threads):
                 writer.writerow(record)
@@ -221,7 +224,7 @@ def main(site, max_records, num_threads=4):
 
 if __name__ == "__main__":
     try:
-        main("trendhunter", max_records=10000, num_threads=4)  # Set max_records and num_threads as needed
+        main("trendhunter", max_records=100, num_threads=4)  # Set max_records and num_threads as needed
     except Exception as e:
         logging.error(f"Script failed: {e}")
         exit(1)
