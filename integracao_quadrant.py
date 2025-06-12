@@ -1,86 +1,101 @@
 import pandas as pd
-from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct
-import time
-from tqdm import tqdm  # For progress bars
+from qdrant_client.http import models
+from tqdm import tqdm
+import logging
 
-def update_qdrant_collection(excel_path, max_retries=3, initial_timeout=30):
-    # Load your updated data
-    df = pd.read_excel(excel_path)
-    print(f"Loaded {len(df)} records from {excel_path}")
-    
-    # Convert date to string if it exists
-    if 'date' in df.columns:
-        df['date'] = df['date'].astype(str)
-    
-    # Load the embedding model
-    model = SentenceTransformer('all-MiniLM-L6-v2')
-    
-    # Generate embeddings
-    print("Generating embeddings...")
-    df["embedding"] = [model.encode(text).tolist() for text in tqdm(df["summary"], desc="Embedding")]
-    
-    # Configure Qdrant client with timeout settings
-    client = QdrantClient(
-        url="https://93f9b8c1-c55c-45ff-9577-4209a182aec2.us-west-1-0.aws.cloud.qdrant.io", 
-        api_key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.Yd7TbZIK4aOouF9pvoxHbEUALHvtEGRHUhEMjf0o584",
-        timeout=initial_timeout,
-        prefer_grpc=True  # gRPC is often more efficient than HTTP
-    )
-    
-    collection_name = "trendhunter"
-    batch_size = 100  # Reduced batch size to prevent timeouts
-    failed_updates = []
-    
-    print("Updating Qdrant collection...")
-    for i in tqdm(range(0, len(df), batch_size), desc="Uploading batches"):
-        batch = df.iloc[i:i + batch_size]
-        points = []
-        for _, row in batch.iterrows():
-            point = PointStruct(
-                id=row["id"],
-                vector=row["embedding"],
-                payload={
-                    "title": row["title"],
-                    "summary": row["summary"],
-                    "score": row["score"],
-                    "author": row["author"],
-                    "link": row["link"],
-                    "date": row.get("date", ""),
-                    "category": row.get("category", "")
-                }
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def initialize_qdrant_client():
+    """Initialize and return Qdrant client with error handling"""
+    try:
+        client = QdrantClient(
+            url="https://93f9b8c1-c55c-45ff-9577-4209a182aec2.us-west-1-0.aws.cloud.qdrant.io",
+            api_key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.Yd7TbZIK4aOouF9pvoxHbEUALHvtEGRHUhEMjf0o584",
+            timeout=100
+        )
+        # Test connection
+        client.get_collections()
+        return client
+    except Exception as e:
+        logger.error(f"Failed to initialize Qdrant client: {str(e)}")
+        raise
+
+def create_collection_if_not_exists(client, collection_name, vector_size=384):
+    """Create collection if it doesn't exist"""
+    try:
+        collections = client.get_collections()
+        collection_names = [collection.name for collection in collections.collections]
+        
+        if collection_name not in collection_names:
+            client.create_collection(
+                collection_name=collection_name,
+                vectors_config=models.VectorParams(
+                    size=vector_size,  # Based on your CSV which has 384 columns (0-383)
+                    distance=models.Distance.COSINE  # Common choice for embeddings
+                )
+            )
+            logger.info(f"Created collection: {collection_name}")
+        else:
+            logger.info(f"Collection {collection_name} already exists")
+    except Exception as e:
+        logger.error(f"Failed to create collection: {str(e)}")
+        raise
+
+def process_dataframe(df):
+    """Process dataframe and convert to list of PointStruct"""
+    points = []
+    for idx, row in tqdm(df.iterrows(), total=len(df), desc="Processing rows"):
+        try:
+            point = models.PointStruct(
+                id=idx,
+                vector=row.values.tolist(),
+                payload={}  # Add payload if needed
             )
             points.append(point)
+        except Exception as e:
+            logger.warning(f"Error processing row {idx}: {str(e)}")
+            continue
+    return points
+
+def main():
+    try:
+        # Initialize client
+        client = initialize_qdrant_client()
         
-        # Retry mechanism
-        retry_count = 0
-        while retry_count < max_retries:
+        # Create collection if it doesn't exist
+        collection_name = "Ideas"
+        create_collection_if_not_exists(client, collection_name)
+        
+        # Read CSV in chunks if large
+        chunksize = 1000  # Adjust based on your memory constraints
+        
+        for chunk in tqdm(pd.read_csv('embedding_train.csv', sep=',', chunksize=chunksize), desc="Processing chunks"):
+            # Convert numeric columns to float (handles commas if present)
+            chunk = chunk.apply(lambda x: pd.to_numeric(x.astype(str).str.replace(',', '.'), errors='coerce'))
+            
+            # Drop rows with NA values that resulted from conversion
+            chunk = chunk.dropna()
+            
+            # Process chunk
+            points = process_dataframe(chunk)
+            
+            # Upsert to Qdrant
             try:
                 client.upsert(
                     collection_name=collection_name,
                     points=points,
-                    wait=True  # Wait until the operation is confirmed
+                    wait=True
                 )
-                break
+                logger.info(f"Successfully upserted {len(points)} points")
             except Exception as e:
-                retry_count += 1
-                if retry_count == max_retries:
-                    print(f"\nFailed to upload batch {i//batch_size + 1} after {max_retries} attempts")
-                    failed_updates.extend(points)
-                    break
-                print(f"\nRetry {retry_count} for batch {i//batch_size + 1} due to: {str(e)}")
-                time.sleep(2 ** retry_count)  # Exponential backoff
-    
-    if failed_updates:
-        print(f"\nWarning: {len(failed_updates)} records failed to update")
-        # Option to save failed updates to a file
-        retry_failed = input("Would you like to retry failed updates? (y/n): ").lower()
-        if retry_failed == 'y':
-            # Implement retry logic for failed updates here
-            pass
-    
-    print(f"\nSuccessfully processed {len(df) - len(failed_updates)}/{len(df)} records")
+                logger.error(f"Failed to upsert batch: {str(e)}")
+                
+    except Exception as e:
+        logger.error(f"Script failed: {str(e)}")
+        raise
 
-# Usage
-update_qdrant_collection('tcc_excel_updated.xlsx')
+if __name__ == "__main__":
+    main()
